@@ -1,23 +1,24 @@
-/* Copyright 2023 shadow3aaa@gitbub.com
-*
-*  Licensed under the Apache License, Version 2.0 (the "License");
-*  you may not use this file except in compliance with the License.
-*  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-*  Unless required by applicable law or agreed to in writing, software
-*  distributed under the License is distributed on an "AS IS" BASIS,
-*  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-*  See the License for the specific language governing permissions and
-*  limitations under the License. */
+// Copyright 2023 shadow3aaa@gitbub.com
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::{mem, sync::atomic::Ordering, time::Instant};
 
 use anyhow::Result;
 use dobby_api::Address;
 use libc::{c_int, c_void};
 
-use crate::{channel::CHANNEL, data::Data, hook::SymbolHooker, IS_CHILD, OLD_FUNC_PTR};
+use crate::{channel::CHANNEL, hook::SymbolHooker, IS_CHILD, OLD_FUNC_PTR};
 
 pub unsafe extern "C" fn at_fork() {
     IS_CHILD.store(true, Ordering::Release);
@@ -47,16 +48,8 @@ pub unsafe extern "C" fn post_hook(android_native_buffer_t: *mut c_void, fence_i
     let ori_fun: extern "C" fn(*mut c_void, c_int) -> c_int = mem::transmute(OLD_FUNC_PTR); // trans ptr to ori func
     let result = ori_fun(android_native_buffer_t, fence_id);
 
-    let buffer = android_native_buffer_t;
     let instant = Instant::now();
-    let cpu = libc::sched_getcpu();
-    let data = Data {
-        buffer,
-        instant,
-        cpu,
-    };
-
-    let _ = CHANNEL.sx.try_send(data);
+    let _ = CHANNEL.sx.try_send(instant);
 
     result
 }

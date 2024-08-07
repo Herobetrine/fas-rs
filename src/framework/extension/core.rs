@@ -1,29 +1,33 @@
-/* Copyright 2023 shadow3aaa@gitbub.com
-*
-*  Licensed under the Apache License, Version 2.0 (the "License");
-*  you may not use this file except in compliance with the License.
-*  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-*  Unless required by applicable law or agreed to in writing, software
-*  distributed under the License is distributed on an "AS IS" BASIS,
-*  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-*  See the License for the specific language governing permissions and
-*  limitations under the License. */
+// Copyright 2023 shadow3aaa@gitbub.com
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::{collections::HashMap, fs, path::PathBuf, sync::mpsc::Receiver, time::Duration};
 
 use inotify::{Inotify, WatchMask};
 use log::{debug, error, info};
-use rlua::Lua;
+use mlua::Lua;
 
-use super::{callbacks::CallBacks, EXTENSIONS_PATH};
+use super::{
+    api::{self, Api},
+    EXTENSIONS_PATH,
+};
 use crate::framework::error::Result;
 
 pub type ExtensionMap = HashMap<PathBuf, Lua>;
 
-pub fn thread(rx: &Receiver<CallBacks>) {
-    let mut extensions = load_extensions().unwrap();
+pub fn thread(rx: &Receiver<Box<dyn Api>>) {
+    let mut extensions = load_extensions().unwrap_or_default();
     let mut inotify = Inotify::init().unwrap();
 
     inotify
@@ -36,14 +40,12 @@ pub fn thread(rx: &Receiver<CallBacks>) {
 
     loop {
         if need_update(&mut inotify) {
-            extensions = load_extensions().unwrap();
+            extensions = load_extensions().unwrap_or_default();
         }
 
-        let Ok(callback) = rx.recv_timeout(Duration::from_secs(1)) else {
-            continue;
-        };
-
-        callback.do_callback(&extensions);
+        if let Ok(trigger) = rx.recv_timeout(Duration::from_secs(1)) {
+            trigger.handle_api(&extensions);
+        }
     }
 }
 
@@ -62,36 +64,47 @@ fn load_extensions() -> Result<ExtensionMap> {
         let path = file.path();
         let file = fs::read_to_string(&path)?;
 
-        match lua.context(|context| {
-            context.globals().set(
-                "log_info",
-                context.create_function(|_, message: String| {
-                    info!("extension: {message}");
-                    Ok(())
-                })?,
-            )?;
-            context.globals().set(
-                "log_debug",
-                context.create_function(|_, message: String| {
-                    debug!("extension: {message}");
-                    Ok(())
-                })?,
-            )?;
-            context.globals().set(
-                "log_error",
-                context.create_function(|_, message: String| {
-                    error!("extension: {message}");
-                    Ok(())
-                })?,
-            )?;
+        lua.globals().set(
+            "log_info",
+            lua.create_function(|_, message: String| {
+                info!("extension: {message}");
+                Ok(())
+            })?,
+        )?;
 
-            context.load(&file).exec()
-        }) {
+        lua.globals().set(
+            "log_debug",
+            lua.create_function(|_, message: String| {
+                debug!("extension: {message}");
+                Ok(())
+            })?,
+        )?;
+
+        lua.globals().set(
+            "log_error",
+            lua.create_function(|_, message: String| {
+                error!("extension: {message}");
+                Ok(())
+            })?,
+        )?;
+
+        // Add in api v1
+        lua.globals().set(
+            "set_policy_freq_offset",
+            lua.create_function(|_, (policy, offset): (i32, isize)| {
+                api::set_policy_freq_offset(policy, offset)?;
+                Ok(())
+            })?,
+        )?;
+
+        match lua.load(&file).exec() {
             Ok(()) => {
                 info!("Extension loaded successfully: {path:?}");
                 map.insert(path, lua);
             }
-            Err(e) => error!("Extension loading failed, reason: {e:#?}"),
+            Err(e) => {
+                error!("Extension loading failed, reason: {e:#?}");
+            }
         }
     }
 

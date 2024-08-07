@@ -1,150 +1,164 @@
-/* Copyright 2023 shadow3aaa@gitbub.com
-*
-*  Licensed under the Apache License, Version 2.0 (the "License");
-*  you may not use this file except in compliance with the License.
-*  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-*  Unless required by applicable law or agreed to in writing, software
-*  distributed under the License is distributed on an "AS IS" BASIS,
-*  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-*  See the License for the specific language governing permissions and
-*  limitations under the License. */
-mod policy;
+// Copyright 2023 shadow3aaa@gitbub.com
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use std::{cell::Cell, collections::HashSet, ffi::OsStr, fs};
+mod cpu_info;
+mod file_handler;
+mod weighting;
 
-use crate::framework::prelude::*;
+use std::{
+    collections::HashMap,
+    fs,
+    sync::{atomic::AtomicIsize, OnceLock},
+    time::Duration,
+};
+
 use anyhow::Result;
+use cpu_info::Info;
+use file_handler::FileHandler;
+use libc::pid_t;
+#[cfg(debug_assertions)]
+use log::debug;
+use log::error;
 
-use policy::Policy;
+use crate::{
+    api::{v1::ApiV1, v2::ApiV2, ApiV0},
+    Extension,
+};
+use weighting::WeightedCalculator;
 
-pub type Freq = usize; // 单位: khz
+const BASE_FREQ: isize = 600_000;
+
+pub static OFFSET_MAP: OnceLock<HashMap<i32, AtomicIsize>> = OnceLock::new();
 
 #[derive(Debug)]
-pub struct CpuCommon {
-    freqs: Vec<Freq>,
-    fas_freq: Cell<Freq>,
-    policies: Vec<Policy>,
+pub struct Controller {
+    max_freq: isize,
+    min_freq: isize,
+    policy_freq: isize,
+    cpu_infos: Vec<Info>,
+    file_handler: FileHandler,
+    weighted_calculator: WeightedCalculator,
 }
 
-impl CpuCommon {
+impl Controller {
     pub fn new() -> Result<Self> {
-        let mut policies: Vec<_> = fs::read_dir("/sys/devices/system/cpu/cpufreq")?
-            .filter_map(|d| Some(d.ok()?.path()))
-            .filter(|p| p.is_dir())
-            .filter(|p| {
-                p.file_name()
-                    .and_then(OsStr::to_str)
-                    .unwrap()
-                    .contains("policy")
+        let cpu_infos: Vec<_> = fs::read_dir("/sys/devices/system/cpu/cpufreq")?
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.is_dir()
+                    && path
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("policy")
             })
-            .map(Policy::new)
-            .map(Result::unwrap)
+            .map(|path| Info::new(path).unwrap())
             .collect();
 
-        policies.sort_unstable();
-        if policies.len() > 2 {
-            policies[0].little = true;
-        }
+        OFFSET_MAP.get_or_init(|| {
+            cpu_infos
+                .iter()
+                .map(|cpu| (cpu.policy, AtomicIsize::new(0)))
+                .collect()
+        });
 
-        let mut freqs: Vec<_> = policies
+        #[cfg(debug_assertions)]
+        debug!("cpu infos: {cpu_infos:?}");
+
+        let max_freq = cpu_infos
             .iter()
-            .flat_map(|p| p.freqs.iter().copied())
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        freqs.sort_unstable();
+            .flat_map(|info| info.freqs.iter())
+            .max()
+            .copied()
+            .unwrap();
 
-        let last_freq = freqs.last().copied().unwrap();
-        let fas_freq = Cell::new(last_freq);
+        let min_freq = cpu_infos
+            .iter()
+            .flat_map(|info| info.freqs.iter())
+            .min()
+            .copied()
+            .unwrap();
 
         Ok(Self {
-            freqs,
-            fas_freq,
-            policies,
+            max_freq,
+            min_freq,
+            policy_freq: max_freq,
+            cpu_infos,
+            file_handler: FileHandler::new(),
+            weighted_calculator: WeightedCalculator::new(),
         })
     }
 
-    fn reset_freq(&self, extension: &Extension) {
-        let last_freq = self.freqs.last().copied().unwrap();
-        self.fas_freq.set(last_freq);
+    pub fn init_game(&mut self, extension: &Extension) {
+        self.policy_freq = self.max_freq;
+        extension.tigger_extentions(ApiV0::InitCpuFreq);
+        extension.tigger_extentions(ApiV1::InitCpuFreq);
+        extension.tigger_extentions(ApiV2::InitCpuFreq);
 
-        for policy in &self.policies {
-            let _ = policy.set_fas_freq(last_freq);
+        for cpu in &self.cpu_infos {
+            cpu.write_freq(self.max_freq, &mut self.file_handler, 1.0)
+                .unwrap_or_else(|e| error!("{e:?}"));
         }
-
-        extension.call_extentions(CallBacks::WriteCpuFreq(last_freq));
     }
 
-    pub fn limit(&self, extension: &Extension) {
-        let current_freq = self.fas_freq.get();
-        let limited_freq = current_freq.saturating_sub(50000).max(self.freqs[0]);
-        self.fas_freq.set(limited_freq);
+    pub fn init_default(&mut self, extension: &Extension) {
+        self.weighted_calculator.clear();
+        self.policy_freq = self.max_freq;
+        extension.tigger_extentions(ApiV0::ResetCpuFreq);
+        extension.tigger_extentions(ApiV1::ResetCpuFreq);
+        extension.tigger_extentions(ApiV2::ResetCpuFreq);
 
-        for policy in &self.policies {
-            let _ = policy.set_fas_freq(limited_freq);
+        for cpu in &self.cpu_infos {
+            cpu.reset_freq(&mut self.file_handler)
+                .unwrap_or_else(|e| error!("{e:?}"));
         }
-
-        extension.call_extentions(CallBacks::WriteCpuFreq(limited_freq));
     }
 
-    pub fn release(&self, extension: &Extension) {
-        let current_freq = self.fas_freq.get();
-        let released_freq = current_freq
-            .saturating_add(50000)
-            .min(self.freqs.last().copied().unwrap());
-        self.fas_freq.set(released_freq);
+    pub fn fas_update_freq(&mut self, process: pid_t, factor: f64) {
+        self.policy_freq = self
+            .policy_freq
+            .saturating_add((BASE_FREQ as f64 * factor) as isize)
+            .clamp(self.min_freq, self.max_freq);
 
-        for policy in &self.policies {
-            let _ = policy.set_fas_freq(released_freq);
+        #[cfg(debug_assertions)]
+        {
+            debug!("change freq: {}", (BASE_FREQ as f64 * factor) as isize);
+            debug!("policy freq: {}", self.policy_freq);
         }
 
-        extension.call_extentions(CallBacks::WriteCpuFreq(released_freq));
+        let weights = self.weighted_calculator.update(process).unwrap();
+
+        for policy in &self.cpu_infos {
+            let weight = weights.weight(&policy.cpus).unwrap_or(1.0);
+            #[cfg(debug_assertions)]
+            debug!("policy{}: weight {:.2}", policy.policy, weight);
+            policy
+                .write_freq(self.policy_freq, &mut self.file_handler, weight)
+                .unwrap_or_else(|e| error!("{e:?}"));
+        }
     }
 
-    pub fn jank(&self, extension: &Extension) {
-        let current_freq = self.fas_freq.get();
-        let released_freq = current_freq
-            .saturating_add(100_000)
-            .min(self.freqs.last().copied().unwrap());
-        self.fas_freq.set(released_freq);
-
-        for policy in &self.policies {
-            let _ = policy.set_fas_freq(released_freq);
+    pub fn scale_factor(target_fps: u32, frame: Duration, target: Duration) -> f64 {
+        if frame > target {
+            let factor_a = (frame - target).as_nanos() as f64 / target.as_nanos() as f64;
+            let factor_b = 120.0 / f64::from(target_fps);
+            factor_a * factor_b
+        } else {
+            let factor_a = (target - frame).as_nanos() as f64 / target.as_nanos() as f64;
+            let factor_b = 120.0 / f64::from(target_fps);
+            factor_a * factor_b * -1.0
         }
-
-        extension.call_extentions(CallBacks::WriteCpuFreq(released_freq));
-    }
-
-    pub fn big_jank(&self, extension: &Extension) {
-        let max_freq = self.freqs.last().copied().unwrap();
-
-        for policy in &self.policies {
-            let _ = policy.set_fas_freq(max_freq);
-        }
-
-        extension.call_extentions(CallBacks::WriteCpuFreq(max_freq));
-    }
-
-    pub fn init_game(&self, m: Mode, c: &Config, extension: &Extension) {
-        self.reset_freq(extension);
-
-        for policy in &self.policies {
-            let _ = policy.init_game(m, c);
-        }
-
-        extension.call_extentions(CallBacks::InitCpuFreq);
-    }
-
-    pub fn init_default(&self, extension: &Extension) {
-        self.reset_freq(extension);
-
-        for policy in &self.policies {
-            let _ = policy.init_default();
-        }
-
-        extension.call_extentions(CallBacks::ResetCpuFreq);
     }
 }

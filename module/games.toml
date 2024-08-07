@@ -1,41 +1,28 @@
 [config]
 keep_std = true
+scene_game_list = true
 
 [game_list]
 "com.hypergryph.arknights" = [30, 60]
 "com.miHoYo.Yuanshen" = [30, 60]
 "com.miHoYo.enterprise.NGHSoD" = [30, 60, 90]
 "com.miHoYo.hkrpg" = [30, 60]
-"com.mojang.minecraftpe" = [60, 120]
+"com.kurogame.mingchao" = [24, 30, 45, 60]
+"com.pwrd.hotta.laohu" = [25, 30, 45, 60, 90]
+"com.mojang.minecraftpe" = [60, 90, 120]
 "com.netease.party" = [30, 60]
 "com.shangyoo.neon" = 60
 "com.tencent.tmgp.pubgmhd" = [60, 90, 120]
 "com.tencent.tmgp.sgame" = [30, 60, 90, 120]
 
 [powersave]
-big_jank_scale = 5.0
-fas_boost = false
-jank_scale = 3.0
-scale = 0.5
-use_performance_governor = false
+margin = 4
 
 [balance]
-big_jank_scale = 5.0
-fas_boost = false
-jank_scale = 3.0
-scale = 0.25
-use_performance_governor = true
+margin = 3
 
 [performance]
-big_jank_scale = 4.5
-fas_boost = false
-jank_scale = 2.5
-scale = 0.23
-use_performance_governor = true
+margin = 2
 
 [fast]
-big_jank_scale = 3.0
-fas_boost = true
-jank_scale = 3.0
-scale = 0.25
-use_performance_governor = false
+margin = 1

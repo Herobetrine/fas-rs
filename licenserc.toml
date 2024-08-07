@@ -1,0 +1,21 @@
+# Copyright 2023 shadow3aaa@gitbub.com
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+headerPath = "NOTICES"
+includes = ["licenserc.toml", "src/**", "Cargo.toml", "build.rs", "make.py", "maketools/**", "module/**", "zygisk/src/**", "zygisk/rust/Cargo.toml", "zygisk/rust/src/**",  "zygisk/rust/include/**", ".github/**"]
+excludes = ["zygisk/src/zygisk.hpp", "module/games.toml", "module/META-INF/**", "module/*.prop", "module/fas-rs-zygisk/*.prop", "module/fas-rs-ebpf/*.prop", "module/fas-rs-zygisk/*.rule"]
+
+[properties]
+inceptionYear = 2023
+copyrightOwner = "shadow3aaa <shadow3aaa@qq.com>"

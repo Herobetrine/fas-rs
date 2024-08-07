@@ -1,10 +1,9 @@
 #!/system/bin/sh
-#
 # Copyright 2023 shadow3aaa@gitbub.com
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
+# You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
@@ -13,10 +12,21 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 MODDIR=${0%/*}
-DIR=/data/media/0/Android/fas-rs
+DIR=/sdcard/Android/fas-rs
 MERGE_FLAG=$DIR/.need_merge
 LOG=$DIR/fas_log.txt
+
+# $1:value $2:path
+lock_val() {
+	umount $2
+	chmod +w $2
+
+	echo "$1" | tee /dev/fas_rs_mask $2
+	/bin/find $2 -exec mount /dev/fas_rs_mask {} \;
+	rm /dev/fas_rs_mask
+}
 
 sh $MODDIR/vtools/init_vtools.sh $(realpath $MODDIR/module.prop)
 
@@ -26,18 +36,12 @@ until [ -d $DIR ]; do
 	sleep 1
 done
 
-if [ -f $MODDIR/zygisk/unloaded ]; then
-	touch $MODDIR/disable
+stop vendor.oplus.ormsHalService-aidl-default
+stop gameopt_hal_service-1-0
 
-	echo "Error: Failed to load zygisk, fas-rs will be disabled" >$LOG
-	echo "Suggestions:" >$LOG
-	echo "Magisk: Please check if zygisk is turned on" >$LOG
-	echo "Magisk: 请检查zygisk是否开启" >$LOG
-	echo "Kernel Su: Please check if you have the latest version of zygisk-next installed" >$LOG
-	echo "Kernel Su: 请检查是否安装最新版本zygisk-next" >$LOG
-
-	exit 1
-fi
+for i in $(seq 0 2); do
+	lock_val "$i 20000" /proc/shell-temp
+done
 
 if [ -f $MERGE_FLAG ]; then
 	$MODDIR/fas-rs merge $MODDIR/games.toml >$DIR/.update_games.toml

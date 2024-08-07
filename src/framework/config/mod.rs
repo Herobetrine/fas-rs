@@ -1,16 +1,17 @@
-/* Copyright 2023 shadow3aaa@gitbub.com
-*
-*  Licensed under the Apache License, Version 2.0 (the "License");
-*  you may not use this file except in compliance with the License.
-*  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-*  Unless required by applicable law or agreed to in writing, software
-*  distributed under the License is distributed on an "AS IS" BASIS,
-*  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-*  See the License for the specific language governing permissions and
-*  limitations under the License. */
+// Copyright 2023 shadow3aaa@gitbub.com
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 mod data;
 mod merge;
 mod read;
@@ -22,7 +23,7 @@ use parking_lot::RwLock;
 use toml::Value;
 
 use crate::framework::{error::Result, node::Mode};
-use data::{ConfigData, ModeConfig};
+use data::{Config as ConfigConfig, ConfigData, ModeConfig};
 use read::wait_and_read;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,42 +65,52 @@ impl Config {
         Ok(Self { toml })
     }
 
+    pub fn need_fas<S: AsRef<str>>(&self, pkg: S) -> bool {
+        let toml = self.toml.read();
+        let pkg = pkg.as_ref();
+
+        toml.game_list.contains_key(pkg) || toml.scene_game_list.contains(pkg)
+    }
+
     pub fn target_fps<S: AsRef<str>>(&self, pkg: S) -> Option<TargetFps> {
         let pkg = pkg.as_ref();
         let pkg = pkg.split(':').next()?;
 
-        let toml = self.toml.read();
-        let list = toml.game_list.clone();
-        let value = list.get(pkg)?.clone();
-
-        drop(toml); // early-drop Rwlock
-
-        match value {
-            Value::Array(arr) => {
-                let mut arr: Vec<_> = arr
-                    .into_iter()
-                    .filter_map(|v| v.as_integer())
-                    .map(|i| i as u32)
-                    .collect();
-                arr.sort_unstable();
-                Some(TargetFps::Array(arr))
-            }
-            Value::Integer(i) => Some(TargetFps::Value(i as u32)),
-            Value::String(s) => {
-                if s == "auto" {
+        self.toml.read().game_list.get(pkg).map_or_else(
+            || {
+                if self.toml.read().scene_game_list.contains(pkg) {
                     Some(TargetFps::Array(vec![30, 45, 60, 90, 120, 144]))
                 } else {
+                    None
+                }
+            },
+            |value| match value {
+                Value::Array(arr) => {
+                    let mut arr: Vec<_> = arr
+                        .iter()
+                        .filter_map(toml::Value::as_integer)
+                        .map(|i| i as u32)
+                        .collect();
+                    arr.sort_unstable();
+                    Some(TargetFps::Array(arr))
+                }
+                Value::Integer(i) => Some(TargetFps::Value(*i as u32)),
+                Value::String(s) => {
+                    if s == "auto" {
+                        Some(TargetFps::Array(vec![30, 45, 60, 90, 120, 144]))
+                    } else {
+                        error!("Find target game {pkg} in config, but meet illegal data type");
+                        error!("Sugg: try \'{pkg} = \"auto\"\'");
+                        None
+                    }
+                }
+                _ => {
                     error!("Find target game {pkg} in config, but meet illegal data type");
                     error!("Sugg: try \'{pkg} = \"auto\"\'");
                     None
                 }
-            }
-            _ => {
-                error!("Find target game {pkg} in config, but meet illegal data type");
-                error!("Sugg: try \'{pkg} = \"auto\"\'");
-                None
-            }
-        }
+            },
+        )
     }
 
     #[must_use]
@@ -115,7 +126,7 @@ impl Config {
     }
 
     #[must_use]
-    pub fn config(&self) -> ConfigData {
-        self.toml.read().clone()
+    pub fn config(&self) -> ConfigConfig {
+        self.toml.read().config
     }
 }

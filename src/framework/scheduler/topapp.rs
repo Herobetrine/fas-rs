@@ -1,55 +1,38 @@
-/* Copyright 2023 shadow3aaa@gitbub.com
-*
-*  Licensed under the Apache License, Version 2.0 (the "License");
-*  you may not use this file except in compliance with the License.
-*  You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-*  Unless required by applicable law or agreed to in writing, software
-*  distributed under the License is distributed on an "AS IS" BASIS,
-*  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-*  See the License for the specific language governing permissions and
-*  limitations under the License. */
-use std::{
-    process::Command,
-    time::{Duration, Instant},
-};
+// Copyright 2023 shadow3aaa@gitbub.com
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+use std::time::{Duration, Instant};
+
+use dumpsys_rs::Dumpsys;
 
 const REFRESH_TIME: Duration = Duration::from_secs(1);
 
-pub struct TimedWatcher {
-    cache: Vec<i32>,
-    last_refresh: Instant,
+#[derive(Default)]
+struct WindowsInfo {
+    pub visible_freeform_window: bool,
+    pub pids: Vec<i32>,
 }
 
-impl TimedWatcher {
-    pub fn new() -> Self {
-        let cache = Self::get_top_pids().unwrap_or_default();
+impl WindowsInfo {
+    pub fn new(dump: &str) -> Self {
+        let pids = Self::parse_top_app(dump);
+        let visible_freeform_window = dump.contains("freeform");
 
         Self {
-            cache,
-            last_refresh: Instant::now(),
+            visible_freeform_window,
+            pids,
         }
-    }
-
-    pub fn is_topapp(&mut self, pid: i32) -> bool {
-        if self.last_refresh.elapsed() > REFRESH_TIME {
-            self.cache = Self::get_top_pids().unwrap_or_default();
-            self.last_refresh = Instant::now();
-        }
-
-        self.cache.contains(&pid)
-    }
-
-    fn get_top_pids() -> Option<Vec<i32>> {
-        let dump = Command::new("dumpsys")
-            .args(["window", "visible-apps"])
-            .output()
-            .ok()?;
-        let dump = String::from_utf8_lossy(&dump.stdout).into_owned();
-
-        Some(Self::parse_top_app(&dump))
     }
 
     fn parse_top_app(dump: &str) -> Vec<i32> {
@@ -59,5 +42,40 @@ impl TimedWatcher {
             .filter_map(|s| s.split(':').next())
             .map(|p| p.trim().parse().unwrap())
             .collect()
+    }
+}
+
+pub struct TimedWatcher {
+    windows_dumper: Dumpsys,
+    cache: WindowsInfo,
+    last_refresh: Instant,
+}
+
+impl TimedWatcher {
+    pub fn new() -> Self {
+        Self {
+            windows_dumper: Dumpsys::new("window").unwrap(),
+            cache: WindowsInfo::default(),
+            last_refresh: Instant::now(),
+        }
+    }
+
+    pub fn topapp_pids(&mut self) -> &Vec<i32> {
+        &self.cache().pids
+    }
+
+    pub fn visible_freeform_window(&mut self) -> bool {
+        self.cache().visible_freeform_window
+    }
+
+    fn cache(&mut self) -> &WindowsInfo {
+        if self.last_refresh.elapsed() > REFRESH_TIME {
+            let dump = self.windows_dumper.dump(&["visible-apps"]).unwrap();
+            self.cache = WindowsInfo::new(&dump);
+
+            self.last_refresh = Instant::now();
+        }
+
+        &self.cache
     }
 }

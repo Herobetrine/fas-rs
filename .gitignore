@@ -1,15 +1,8 @@
 # target
 /target
 
-# module-dirty
-/module/README.md
-/module/module.prop
-
 # build
 /output
-
-# vscode
-/.vscode
 
 # py
 /__pycache__
