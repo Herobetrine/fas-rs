@@ -12,29 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{fs, path::Path, sync::Arc, thread, time::Duration};
+use std::{fs, path::Path, sync::mpsc::Sender, thread, time::Duration};
 
 use inotify::{Inotify, WatchMask};
 use log::{debug, error};
-use parking_lot::RwLock;
 
 use super::data::{ConfigData, SceneAppList};
 use crate::framework::error::Result;
 
 const SCENE_PROFILE: &str = "/data/data/com.omarea.vtools/shared_prefs/games.xml";
 
-pub(super) fn wait_and_read(
-    path: &Path,
-    std_path: &Path,
-    toml: &Arc<RwLock<ConfigData>>,
-) -> Result<()> {
+pub(super) fn wait_and_read(path: &Path, std_path: &Path, sx: &Sender<ConfigData>) -> Result<()> {
     let mut retry_count = 0;
 
     let std_config = fs::read_to_string(std_path)?;
     let std_config: ConfigData = toml::from_str(&std_config)?;
 
     loop {
-        check_counter_final(&mut retry_count, toml, &std_config);
+        check_counter_final(&mut retry_count, sx, &std_config);
 
         let ori = match fs::read_to_string(path) {
             Ok(s) => {
@@ -49,23 +44,16 @@ pub(super) fn wait_and_read(
             }
         };
 
-        *toml.write() = match toml::from_str(&ori) {
+        let mut toml: ConfigData = match toml::from_str(&ori) {
             Ok(o) => {
                 retry_count = 0;
                 o
             }
             Err(e) => {
-                if retry_count > 3 {
-                    error!("Failed to parse config {path:?}, reason: {e}");
-                    error!(
-                        "Trying to roll back to the last configuration that could be resolved..."
-                    );
-                    let latest = toml::to_string(&*toml.read())?;
-                    if fs::write(path, latest).is_ok() {
-                        error!("Rollback successful");
-                        retry_count = 0;
-                    }
-                }
+                assert!(
+                    retry_count <= 3,
+                    "Failed to parse config {path:?}, reason: {e}, go panic."
+                );
 
                 retry_count += 1;
                 thread::sleep(Duration::from_secs(1));
@@ -73,31 +61,27 @@ pub(super) fn wait_and_read(
             }
         };
 
-        if toml.read().config.scene_game_list {
-            let _ = read_scene_games(toml);
-        } else {
-            toml.write().scene_game_list.clear();
+        if toml.config.scene_game_list {
+            let _ = read_scene_games(&mut toml);
         }
+
+        sx.send(toml).unwrap();
 
         wait_until_update(path)?;
     }
 }
 
-fn check_counter_final(
-    retry_count: &mut u8,
-    toml: &Arc<RwLock<ConfigData>>,
-    std_config: &ConfigData,
-) {
+fn check_counter_final(retry_count: &mut u8, sx: &Sender<ConfigData>, std_config: &ConfigData) {
     if *retry_count > 10 {
         error!("Too many read / parse user config retries");
         error!("Use std profile instead until we could read and parse user config");
 
-        *toml.write() = std_config.clone();
+        sx.send(std_config.clone()).unwrap();
         *retry_count = 0;
     }
 }
 
-fn read_scene_games(toml: &Arc<RwLock<ConfigData>>) -> Result<()> {
+fn read_scene_games(toml: &mut ConfigData) -> Result<()> {
     if Path::new(SCENE_PROFILE).exists() {
         let scene_apps = fs::read_to_string(SCENE_PROFILE)?;
         let scene_apps: SceneAppList = quick_xml::de::from_str(&scene_apps)?;
@@ -108,7 +92,7 @@ fn read_scene_games(toml: &Arc<RwLock<ConfigData>>) -> Result<()> {
             .map(|game| game.pkg)
             .collect();
 
-        toml.write().scene_game_list = game_list;
+        toml.scene_game_list = game_list;
     }
 
     Ok(())

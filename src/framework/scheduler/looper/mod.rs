@@ -17,19 +17,21 @@ mod clean;
 mod policy;
 mod utils;
 
-#[cfg(feature = "use_binder")]
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "use_ebpf")]
 use frame_analyzer::Analyzer;
+use likely_stable::{likely, unlikely};
 #[cfg(debug_assertions)]
 use log::debug;
 use log::info;
+use policy::{
+    evolution::{evaluate_fitness, load_pid_params, mutate_params, open_database},
+    pid_controll::pid_control,
+    PidParams,
+};
+use rusqlite::Connection;
 
 use super::{topapp::TimedWatcher, FasData};
-#[cfg(feature = "use_binder")]
-use crate::framework::error::Error;
 use crate::{
     framework::{
         config::Config,
@@ -40,7 +42,7 @@ use crate::{
     Controller,
 };
 
-use buffer::{Buffer, BufferState};
+use buffer::{Buffer, BufferWorkingState};
 use clean::Cleaner;
 
 #[derive(PartialEq)]
@@ -50,47 +52,88 @@ enum State {
     Working,
 }
 
+struct EvolutionState {
+    pid_params: PidParams,
+    mutated_pid_params: PidParams,
+    mutate_timer: Instant,
+    fitness: f64,
+}
+
+impl EvolutionState {
+    pub fn reset(&mut self, database: &Connection, pkg: &str) {
+        self.pid_params = load_pid_params(database, pkg).unwrap_or_else(|_| PidParams::default());
+        self.mutated_pid_params = self.pid_params;
+        self.fitness = f64::MIN;
+    }
+
+    pub fn try_evolution(&mut self, buffer: &Buffer, config: &mut Config, mode: Mode) {
+        if unlikely(self.mutate_timer.elapsed() > Duration::from_secs(1)) {
+            self.mutate_timer = Instant::now();
+
+            if let Some(fitness) = evaluate_fitness(buffer, config, mode) {
+                if fitness > self.fitness {
+                    self.pid_params = self.mutated_pid_params;
+                }
+
+                self.fitness = fitness;
+            }
+
+            self.mutated_pid_params = mutate_params(self.pid_params);
+        }
+    }
+}
+
+struct FasState {
+    mode: Mode,
+    working_state: State,
+    janked: bool,
+    delay_timer: Instant,
+    buffer: Option<Buffer>,
+}
+
 pub struct Looper {
-    #[cfg(feature = "use_binder")]
-    rx: Receiver<FasData>,
-    #[cfg(feature = "use_ebpf")]
     analyzer: Analyzer,
     config: Config,
     node: Node,
     extension: Extension,
-    mode: Mode,
     controller: Controller,
     windows_watcher: TimedWatcher,
     cleaner: Cleaner,
-    buffer: Option<Buffer>,
-    state: State,
-    delay_timer: Instant,
+    database: Connection,
+    fas_state: FasState,
+    evolution_state: EvolutionState,
 }
 
 impl Looper {
     pub fn new(
-        #[cfg(feature = "use_binder")] rx: Receiver<FasData>,
-        #[cfg(feature = "use_ebpf")] analyzer: Analyzer,
+        analyzer: Analyzer,
         config: Config,
         node: Node,
         extension: Extension,
         controller: Controller,
     ) -> Self {
         Self {
-            #[cfg(feature = "use_binder")]
-            rx,
-            #[cfg(feature = "use_ebpf")]
             analyzer,
             config,
             node,
             extension,
-            mode: Mode::Balance,
             controller,
             windows_watcher: TimedWatcher::new(),
             cleaner: Cleaner::new(),
-            buffer: None,
-            state: State::NotWorking,
-            delay_timer: Instant::now(),
+            database: open_database().unwrap(),
+            fas_state: FasState {
+                mode: Mode::Balance,
+                buffer: None,
+                working_state: State::NotWorking,
+                delay_timer: Instant::now(),
+                janked: false,
+            },
+            evolution_state: EvolutionState {
+                pid_params: PidParams::default(),
+                mutated_pid_params: PidParams::default(),
+                mutate_timer: Instant::now(),
+                fitness: f64::MIN,
+            },
         }
     }
 
@@ -98,16 +141,15 @@ impl Looper {
         loop {
             self.switch_mode();
 
-            #[cfg(feature = "use_ebpf")]
             let _ = self.update_analyzer();
             self.retain_topapp();
 
-            let target_fps = self.buffer.as_ref().and_then(|b| b.target_fps);
-
-            #[cfg(feature = "use_binder")]
-            let fas_data = self.recv_message()?;
-            #[cfg(feature = "use_ebpf")]
-            let fas_data = self.recv_message();
+            let target_fps = self
+                .fas_state
+                .buffer
+                .as_ref()
+                .and_then(|buffer| buffer.target_fps_state.target_fps);
+            let fas_data = self.recv_message(target_fps);
 
             if self.windows_watcher.visible_freeform_window() {
                 self.disable_fas();
@@ -115,57 +157,59 @@ impl Looper {
             }
 
             if let Some(data) = fas_data {
+                self.fas_state.janked = false;
+                #[cfg(debug_assertions)]
+                debug!("janked: {}", self.fas_state.janked);
+
                 if let Some(state) = self.buffer_update(&data) {
                     match state {
-                        BufferState::Usable => self.do_policy(target_fps),
-                        BufferState::Unusable => self.disable_fas(),
+                        BufferWorkingState::Usable => self.do_policy(),
+                        BufferWorkingState::Unusable => self.disable_fas(),
                     }
                 }
-            } else if let Some(buffer) = self.buffer.as_mut() {
-                buffer.additional_frametime();
+            } else if let Some(buffer) = self.fas_state.buffer.as_mut() {
+                self.fas_state.janked = true;
+                #[cfg(debug_assertions)]
+                debug!("janked: {}", self.fas_state.janked);
+                buffer.additional_frametime(&self.extension);
+                self.do_policy();
             }
         }
     }
 
     fn switch_mode(&mut self) {
         if let Ok(new_mode) = self.node.get_mode() {
-            if self.mode != new_mode {
+            if likely(self.fas_state.mode != new_mode) {
                 info!(
                     "Switch mode: {} -> {}",
-                    self.mode.to_string(),
+                    self.fas_state.mode.to_string(),
                     new_mode.to_string()
                 );
-                self.mode = new_mode;
+                self.fas_state.mode = new_mode;
 
-                if self.state == State::Working {
+                if self.fas_state.working_state == State::Working {
                     self.controller.init_game(&self.extension);
                 }
             }
         }
     }
 
-    #[cfg(feature = "use_binder")]
-    fn recv_message(&self) -> Result<Option<FasData>> {
-        match self.rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(m) => Ok(Some(m)),
-            Err(e) => {
-                if e == RecvTimeoutError::Disconnected {
-                    return Err(Error::Other("Binder Server Disconnected"));
-                }
+    fn recv_message(&mut self, target_fps: Option<u32>) -> Option<FasData> {
+        let target_frametime = target_fps.map(|fps| Duration::from_secs(1) / fps);
 
-                Ok(None)
-            }
-        }
-    }
+        let time = if unlikely(self.fas_state.working_state != State::Working) {
+            Duration::from_millis(100)
+        } else if unlikely(self.fas_state.janked) {
+            target_frametime.map_or(Duration::from_millis(100), |time| time / 4)
+        } else {
+            target_frametime.map_or(Duration::from_millis(100), |time| time * 2)
+        };
 
-    #[cfg(feature = "use_ebpf")]
-    fn recv_message(&mut self) -> Option<FasData> {
         self.analyzer
-            .recv_timeout(Duration::from_millis(500))
+            .recv_timeout(time)
             .map(|(pid, frametime)| FasData { pid, frametime })
     }
 
-    #[cfg(feature = "use_ebpf")]
     fn update_analyzer(&mut self) -> Result<()> {
         use crate::framework::utils::get_process_name;
 
@@ -179,27 +223,31 @@ impl Looper {
         Ok(())
     }
 
-    fn do_policy(&mut self, target_fps: Option<u32>) {
-        if self.state != State::Working {
+    fn do_policy(&mut self) {
+        if unlikely(self.fas_state.working_state != State::Working) {
             #[cfg(debug_assertions)]
             debug!("Not running policy!");
             return;
         }
 
-        let Some(event) = self
-            .buffer
-            .as_ref()
-            .and_then(|buffer| buffer.event(&self.config, self.mode))
-        else {
-            self.disable_fas();
+        let control = if let Some(buffer) = &self.fas_state.buffer {
+            self.evolution_state
+                .try_evolution(buffer, &mut self.config, self.fas_state.mode);
+
+            pid_control(
+                buffer,
+                &mut self.config,
+                self.fas_state.mode,
+                self.evolution_state.mutated_pid_params,
+            )
+            .unwrap_or_default()
+        } else {
             return;
         };
 
-        let target_fps = target_fps.unwrap_or(120);
+        #[cfg(debug_assertions)]
+        debug!("control: {control}khz");
 
-        let factor = Controller::scale_factor(target_fps, event.frame, event.target);
-        if let Some(process) = self.buffer.as_ref().map(|b| b.pid) {
-            self.controller.fas_update_freq(process, factor);
-        }
+        self.controller.fas_update_freq(control);
     }
 }

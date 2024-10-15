@@ -12,30 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
-use cpu_cycles_reader::{CyclesInstant, CyclesReader};
-use libc::pid_t;
+use std::sync::mpsc::Receiver;
+
+use super::data::ConfigData;
 
 #[derive(Debug)]
-pub struct TaskMeta {
-    pub weight: f64,
-    pub cycles_trace: Vec<CyclesInstant>,
-    pub cycles_reader: CyclesReader,
+pub struct Inner {
+    rx: Receiver<ConfigData>,
+    config: ConfigData,
 }
 
-impl TaskMeta {
-    pub fn new(tid: pid_t, num_cpus: usize) -> Result<Self> {
-        let cycles_reader = CyclesReader::new(Some(tid))?;
-        let mut cycles_trace = Vec::new();
+impl Inner {
+    pub const fn new(config: ConfigData, rx: Receiver<ConfigData>) -> Self {
+        Self { rx, config }
+    }
 
-        for cpu in 0..num_cpus {
-            cycles_trace.push(cycles_reader.instant(cpu as i32)?);
+    pub fn config(&mut self) -> &mut ConfigData {
+        if let Some(config) = self.rx.try_iter().last() {
+            self.config = config;
         }
 
-        Ok(Self {
-            weight: 0.0,
-            cycles_reader,
-            cycles_trace,
-        })
+        &mut self.config
     }
 }

@@ -14,9 +14,15 @@
 
 use std::time::{Duration, Instant};
 
+use likely_stable::unlikely;
 use log::info;
 
-use super::{super::FasData, buffer::BufferState, Buffer, Looper, State};
+use super::{
+    super::FasData,
+    buffer::BufferWorkingState,
+    policy::evolution::{open_database, save_pid_params},
+    Buffer, Looper, State,
+};
 use crate::{
     api::{v1::ApiV1, v2::ApiV2},
     framework::{api::ApiV0, utils::get_process_name},
@@ -26,22 +32,28 @@ const DELAY_TIME: Duration = Duration::from_secs(3);
 
 impl Looper {
     pub fn retain_topapp(&mut self) {
-        if let Some(buffer) = self.buffer.as_ref() {
-            if !self.windows_watcher.topapp_pids().contains(&buffer.pid) {
-                #[cfg(feature = "use_ebpf")]
-                let _ = self.analyzer.detach_app(buffer.pid);
-                let pkg = buffer.pkg.clone();
+        if let Some(buffer) = self.fas_state.buffer.as_ref() {
+            if !self
+                .windows_watcher
+                .topapp_pids()
+                .contains(&buffer.package_info.pid)
+            {
+                let _ = self.analyzer.detach_app(buffer.package_info.pid);
+                let pkg = buffer.package_info.pkg.clone();
+                if save_pid_params(&self.database, &pkg, self.evolution_state.pid_params).is_err() {
+                    self.database = open_database().unwrap();
+                }
                 self.extension
-                    .tigger_extentions(ApiV0::UnloadFas(buffer.pid, pkg.clone()));
+                    .trigger_extentions(ApiV0::UnloadFas(buffer.package_info.pid, pkg.clone()));
                 self.extension
-                    .tigger_extentions(ApiV1::UnloadFas(buffer.pid, pkg.clone()));
+                    .trigger_extentions(ApiV1::UnloadFas(buffer.package_info.pid, pkg.clone()));
                 self.extension
-                    .tigger_extentions(ApiV2::UnloadFas(buffer.pid, pkg));
-                self.buffer = None;
+                    .trigger_extentions(ApiV2::UnloadFas(buffer.package_info.pid, pkg));
+                self.fas_state.buffer = None;
             }
         }
 
-        if self.buffer.is_none() {
+        if self.fas_state.buffer.is_none() {
             self.disable_fas();
         } else {
             self.enable_fas();
@@ -49,32 +61,35 @@ impl Looper {
     }
 
     pub fn disable_fas(&mut self) {
-        match self.state {
+        match self.fas_state.working_state {
             State::Working => {
-                self.state = State::NotWorking;
+                self.fas_state.working_state = State::NotWorking;
                 self.cleaner.undo_cleanup();
                 self.controller.init_default(&self.extension);
-                self.extension.tigger_extentions(ApiV0::StopFas);
-                self.extension.tigger_extentions(ApiV1::StopFas);
-                self.extension.tigger_extentions(ApiV2::StopFas);
+                if let Some(buffer) = &self.fas_state.buffer {
+                    let _ = self.analyzer.detach_app(buffer.package_info.pid);
+                }
+                self.extension.trigger_extentions(ApiV0::StopFas);
+                self.extension.trigger_extentions(ApiV1::StopFas);
+                self.extension.trigger_extentions(ApiV2::StopFas);
             }
-            State::Waiting => self.state = State::NotWorking,
+            State::Waiting => self.fas_state.working_state = State::NotWorking,
             State::NotWorking => (),
         }
     }
 
     pub fn enable_fas(&mut self) {
-        match self.state {
+        match self.fas_state.working_state {
             State::NotWorking => {
-                self.state = State::Waiting;
-                self.delay_timer = Instant::now();
-                self.extension.tigger_extentions(ApiV0::StartFas);
-                self.extension.tigger_extentions(ApiV1::StartFas);
-                self.extension.tigger_extentions(ApiV2::StartFas);
+                self.fas_state.working_state = State::Waiting;
+                self.fas_state.delay_timer = Instant::now();
+                self.extension.trigger_extentions(ApiV0::StartFas);
+                self.extension.trigger_extentions(ApiV1::StartFas);
+                self.extension.trigger_extentions(ApiV2::StartFas);
             }
             State::Waiting => {
-                if self.delay_timer.elapsed() > DELAY_TIME {
-                    self.state = State::Working;
+                if self.fas_state.delay_timer.elapsed() > DELAY_TIME {
+                    self.fas_state.working_state = State::Working;
                     self.cleaner.cleanup();
                     self.controller.init_game(&self.extension);
                 }
@@ -83,38 +98,42 @@ impl Looper {
         }
     }
 
-    pub fn buffer_update(&mut self, d: &FasData) -> Option<BufferState> {
-        if !self.windows_watcher.topapp_pids().contains(&d.pid) || d.frametime.is_zero() {
+    pub fn buffer_update(&mut self, data: &FasData) -> Option<BufferWorkingState> {
+        if unlikely(
+            !self.windows_watcher.topapp_pids().contains(&data.pid) || data.frametime.is_zero(),
+        ) {
             return None;
         }
 
-        let pid = d.pid;
-        let frametime = d.frametime;
+        let pid = data.pid;
+        let frametime = data.frametime;
 
-        if let Some(buffer) = self.buffer.as_mut() {
+        if let Some(buffer) = self.fas_state.buffer.as_mut() {
             buffer.push_frametime(frametime, &self.extension);
-            Some(buffer.state)
+            Some(buffer.buffer_state.working_state)
         } else {
-            let Ok(pkg) = get_process_name(d.pid) else {
+            let Ok(pkg) = get_process_name(data.pid) else {
                 return None;
             };
             let target_fps = self.config.target_fps(&pkg)?;
 
             info!("New fas buffer on: [{pkg}]");
 
+            self.evolution_state.reset(&self.database, &pkg);
+
             self.extension
-                .tigger_extentions(ApiV0::LoadFas(pid, pkg.clone()));
+                .trigger_extentions(ApiV0::LoadFas(pid, pkg.clone()));
             self.extension
-                .tigger_extentions(ApiV1::LoadFas(pid, pkg.clone()));
+                .trigger_extentions(ApiV1::LoadFas(pid, pkg.clone()));
             self.extension
-                .tigger_extentions(ApiV2::LoadFas(pid, pkg.clone()));
+                .trigger_extentions(ApiV2::LoadFas(pid, pkg.clone()));
 
             let mut buffer = Buffer::new(target_fps, pid, pkg);
             buffer.push_frametime(frametime, &self.extension);
 
-            self.buffer = Some(buffer);
+            self.fas_state.buffer = Some(buffer);
 
-            Some(BufferState::Unusable)
+            Some(BufferWorkingState::Unusable)
         }
     }
 }

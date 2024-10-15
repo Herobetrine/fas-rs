@@ -12,28 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
+pub mod evolution;
+pub mod pid_controll;
 
-pub struct Weights {
-    pub map: HashMap<i32, f64>,
+#[derive(Debug, Copy, Clone)]
+pub struct PidParams {
+    pub kp: f64,
+    pub ki: f64,
+    pub kd: f64,
 }
 
-impl Weights {
-    pub fn weight(&self, cpus: &Vec<i32>) -> Option<f64> {
-        if self.map.is_empty() {
-            return None;
+impl Default for PidParams {
+    fn default() -> Self {
+        Self {
+            kp: 0.000_3,
+            ki: 0.000_03,
+            kd: 0.000_003,
         }
-
-        let mut weight = 1.0;
-        for cpu in cpus {
-            let partial_weight = *self.map.get(cpu)?;
-            if partial_weight.is_normal() {
-                weight += partial_weight;
-            }
-        }
-
-        let weight = weight.min(1.5);
-
-        Some(weight)
     }
 }
