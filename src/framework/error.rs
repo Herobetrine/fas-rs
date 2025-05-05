@@ -1,18 +1,21 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
-use std::io;
+use std::{ffi::NulError, io};
 
 use frame_analyzer::AnalyzerError;
 use thiserror::Error as ThisError;
@@ -21,6 +24,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(ThisError, Debug)]
 pub enum Error {
+    #[error(transparent)]
+    Anyhow(#[from] anyhow::Error),
     #[error(transparent)]
     FrameAnalyzer(#[from] AnalyzerError),
     #[error("Got an error when parsing config")]
@@ -39,10 +44,15 @@ pub enum Error {
     SchedulerMissing(&'static str),
     #[error(transparent)]
     Io(#[from] io::Error),
-    #[error("Lua extension error: {source:?}")]
+    #[error(transparent)]
     Lua {
         #[from]
         source: mlua::Error,
+    },
+    #[error(transparent)]
+    Null {
+        #[from]
+        source: NulError,
     },
     #[error("Got an error: {0}")]
     #[allow(dead_code)]

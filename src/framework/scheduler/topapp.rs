@@ -1,16 +1,19 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
 use std::time::{Duration, Instant};
 
@@ -27,7 +30,9 @@ struct WindowsInfo {
 impl WindowsInfo {
     pub fn new(dump: &str) -> Self {
         let pids = Self::parse_top_app(dump);
-        let visible_freeform_window = dump.contains("freeform");
+        let visible_freeform_window = dump.contains("freeform")
+            || dump.contains("FlexibleTaskCaptionView")
+            || dump.contains("FlexibleTaskIndicatorView");
 
         Self {
             visible_freeform_window,
@@ -45,16 +50,23 @@ impl WindowsInfo {
     }
 }
 
-pub struct TimedWatcher {
+pub struct TopAppsWatcher {
     windows_dumper: Dumpsys,
     cache: WindowsInfo,
     last_refresh: Instant,
 }
 
-impl TimedWatcher {
+impl TopAppsWatcher {
     pub fn new() -> Self {
+        let windows_dumper = loop {
+            match Dumpsys::new("window") {
+                Some(d) => break d,
+                None => std::thread::sleep(Duration::from_secs(1)),
+            }
+        };
+
         Self {
-            windows_dumper: Dumpsys::new("window").unwrap(),
+            windows_dumper,
             cache: WindowsInfo::default(),
             last_refresh: Instant::now(),
         }
@@ -70,7 +82,15 @@ impl TimedWatcher {
 
     fn cache(&mut self) -> &WindowsInfo {
         if self.last_refresh.elapsed() > REFRESH_TIME {
-            let dump = self.windows_dumper.dump(&["visible-apps"]).unwrap();
+            let dump = loop {
+                match self.windows_dumper.dump(&["visible-apps"]) {
+                    Ok(dump) => break dump,
+                    Err(e) => {
+                        log::error!("Failed to dump windows: {e}, retrying");
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            };
             self.cache = WindowsInfo::new(&dump);
 
             self.last_refresh = Instant::now();

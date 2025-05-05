@@ -1,16 +1,19 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
 use std::path::Path;
 
@@ -22,7 +25,7 @@ pub fn get_api_version(lua: &Lua) -> u8 {
     lua.globals().get("API_VERSION").unwrap_or(0)
 }
 
-pub fn do_callback<P: AsRef<Path>, S: AsRef<str>, A: for<'lua> IntoLuaMulti<'lua>>(
+pub fn do_callback<P: AsRef<Path>, S: AsRef<str>, A: IntoLuaMulti>(
     extension: P,
     lua: &Lua,
     function: S,
@@ -31,9 +34,12 @@ pub fn do_callback<P: AsRef<Path>, S: AsRef<str>, A: for<'lua> IntoLuaMulti<'lua
     let function = function.as_ref();
     let extension = extension.as_ref();
 
-    if let Ok(func) = lua.globals().get::<_, Function>(function) {
+    if let Ok(func) = lua.globals().get::<Function>(function) {
         func.call(args).unwrap_or_else_likely(|e| {
-            error!("Got an error when executing extension '{extension:?}', reason: {e:#?}");
+            error!(
+                "Got an error when executing extension '{}', reason: {e:#?}",
+                extension.display()
+            );
         });
     }
 }

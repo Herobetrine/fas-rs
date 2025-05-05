@@ -1,10 +1,19 @@
+<div align="center">
+
+<img src="https://github.com/shadow3aaa/fas-rs/raw/refs/heads/master/assets/icon.svg" width="160" height="160" style="display: block; margin: 0 auto;" alt="SVG Image">
+
 # **fas-rs**
+
+### Frame aware scheduling for android
 
 [![English][readme-en-badge]][readme-en-url]
 [![Stars][stars-badge]][stars-url]
 [![CI Build][ci-badge]][ci-url]
 [![Release][release-badge]][release-url]
 [![Download][download-badge]][download-url]
+[![Telegram][telegram-badge]][telegram-url]
+
+</div>
 
 [readme-en-badge]: https://img.shields.io/badge/README-English-blue.svg?style=for-the-badge&logo=readme
 [readme-en-url]: README_EN.md
@@ -14,8 +23,10 @@
 [ci-url]: https://github.com/shadow3aaa/fas-rs/actions/workflows/ci.yml
 [release-badge]: https://img.shields.io/github/v/release/shadow3aaa/fas-rs?style=for-the-badge&logo=rust
 [release-url]: https://github.com/shadow3aaa/fas-rs/releases/latest
-[download-badge]: https://img.shields.io/github/downloads/shadow3aaa/fas-rs/total?style=for-the-badge&logo=download
+[download-badge]: https://img.shields.io/github/downloads/shadow3aaa/fas-rs/total?style=for-the-badge
 [download-url]: https://github.com/shadow3aaa/fas-rs/releases/latest
+[telegram-badge]: https://img.shields.io/badge/Group-blue?style=for-the-badge&logo=telegram&label=Telegram
+[telegram-url]: https://t.me/fas_rs_official
 
 ## **简介**
 
@@ -44,7 +55,7 @@
   - **scene_game_list**
 
     - 类型: `bool`
-    - `true`: 使用 scene 游戏列表
+    - `true`: 使用 scene 游戏列表 \*
     - `false`: 不使用 scene 游戏列表
 
   - `*`: 默认配置
@@ -58,11 +69,24 @@
 
 - ### **模式(`powersave` / `balance` / `performance` / `fast`)说明:**
 
-  - **mode:**
+  - #### **模式切换:**
+
     - 目前`fas-rs`还没有官方的切换模式的管理器，而是接入了[`scene`](http://vtools.omarea.com)的配置接口，如果你不用 scene 则默认使用`balance`的配置
     - 如果你有在 linux 上编程的一些了解，向`/dev/fas_rs/mode`节点写入 4 模式中的任意一个即可切换到对应模式，同时读取它也可以知道现在`fas-rs`所处的模式
-  - **模式参数说明:**
-    - margin(ms): 允许的掉帧余量，越小帧率越高，越大越省电(0 < margin < 1000)
+
+  - #### **模式参数说明:**
+
+    - **margin_fps:**
+      - 支持两种格式:
+       1. 完整格式：`margin_fps = { base = <float>, <target_fps margin override> = <float>(可多项) }`
+       2. 简写：`margin_fps = <float>`，等效`margin_fps = { base = <float> }`
+      - 解释: 以 fps 为单位的额外允许掉帧量，除非用`target_fps margin override`强制指定`margin_fps`值，否则会根据公式(`target_fps / 60 * base`)缩放
+
+    - **core_temp_thresh:**
+
+      - 类型: `整数`或者`"disabled"`
+      - `整数`: 让`fas-rs`触发温控的核心温度(单位0.001℃)
+      - `"disabled"`: 关闭`fas-rs`内置温控
 
 ### **`games.toml`配置标准例:**
 
@@ -76,23 +100,29 @@ scene_game_list = true
 "com.miHoYo.Yuanshen" = [30, 60]
 "com.miHoYo.enterprise.NGHSoD" = [30, 60, 90]
 "com.miHoYo.hkrpg" = [30, 60]
-"com.mojang.minecraftpe" = [60, 120]
+"com.kurogame.mingchao" = [24, 30, 45, 60]
+"com.pwrd.hotta.laohu" = [25, 30, 45, 60, 90]
+"com.mojang.minecraftpe" = [60, 90, 120]
 "com.netease.party" = [30, 60]
 "com.shangyoo.neon" = 60
 "com.tencent.tmgp.pubgmhd" = [60, 90, 120]
 "com.tencent.tmgp.sgame" = [30, 60, 90, 120]
 
 [powersave]
-margin = 4
+margin_fps = 3
+core_temp_thresh = 80000
 
 [balance]
-margin = 3
+margin_fps = 1
+core_temp_thresh = 90000
 
 [performance]
-margin = 2
+margin_fps = 0
+core_temp_thresh = 95000
 
 [fast]
-margin = 1
+margin_fps = 0
+core_temp_thresh = 95000
 ```
 
 ## **配置合并**
@@ -120,15 +150,14 @@ margin = 1
 ## **编译**
 
 ```bash
-# Ubuntu(NDK is required)
-apt install gcc-multilib git-lfs clang python3
+# Ubuntu (NDK is required)
+apt install gcc-multilib git-lfs
 
-# ruff(python lints & format)
-pip install ruff
-
-# Rust
+# Rust (Nightly version is required)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default nightly
 rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+rustup component add rust-src
 
 # Cargo-ndk
 cargo install cargo-ndk
@@ -138,7 +167,7 @@ git clone https://github.com/shadow3aaa/fas-rs
 cd fas-rs
 
 # Compile
-python3 ./make.py build --release
+cargo xtask build -r
 ```
 
 ## **捐赠**

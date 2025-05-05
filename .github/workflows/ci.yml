@@ -1,16 +1,19 @@
-# Copyright 2023 shadow3aaa@gitbub.com
+# Copyright 2023-2025, dependabot[bot], shadow3, shadow3aaa
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This file is part of fas-rs.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# fas-rs is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
 name: ci-build
 on:
@@ -21,7 +24,53 @@ on:
 env:
   CARGO_TERM_COLOR: always
 jobs:
-  build:
+  release-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup ndk
+        run: |
+          ndk_url=$(wget -qO- https://github.com/android/ndk/releases/latest | grep -e 'https://dl.google.com/android/repository/android-ndk-.*-linux.zip' | sed -n 's/.*<a href="\([^"]*\)".*/\1/p')
+          wget -O ndk.zip $ndk_url -nv
+          mkdir -p ~/ndk_temp
+          unzip ndk.zip -d ~/ndk_temp 2>&1 > /dev/null
+          mv ~/ndk_temp/*/* ~/ndk_temp
+      - name: Setup rust toolchains
+        run: |
+          rustup default nightly
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          rustup component add rust-src
+          rustup update
+      - name: Install cargo ndk
+        run: cargo install cargo-ndk
+      - name: Setup WebUI Deps
+        run: |
+          npm install next@latest react@latest react-dom@latest
+          cd webui
+          npm install
+      - name: Other deps
+        run: |
+          sudo apt update
+          sudo apt install gcc-multilib
+      - name: Build
+        run: |
+          export ANDROID_NDK_HOME=$(realpath ~/ndk_temp)
+          export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
+          cargo xtask build -r -v
+      - name: Cleanup
+        run: rm -rf ~/ndk_temp
+      - name: Prepare artifacts
+        run: |
+          mkdir -p output/artifact/release
+          unzip "output/fas-rs(release).zip" -d output/artifact/release
+      - name: Upload release version
+        uses: actions/upload-artifact@v4
+        with:
+          name: fas-rs(release)
+          compression-level: 9
+          path: output/artifact/release
+  
+  debug-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,33 +89,64 @@ jobs:
           rustup update
       - name: Install cargo ndk
         run: cargo install cargo-ndk
+      - name: Setup WebUI Deps
+        run: |
+          npm install next@latest react@latest react-dom@latest
+          cd webui
+          npm install
       - name: Other deps
         run: |
           sudo apt update
-          sudo apt install gcc-multilib git-lfs
-          git lfs pull
+          sudo apt install gcc-multilib
       - name: Build
         run: |
           export ANDROID_NDK_HOME=$(realpath ~/ndk_temp)
           export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
-
-          python3 ./make.py build --release --nightly
-          python3 ./make.py build --debug --nightly
+    
+          cargo xtask build -v
       - name: Prepare artifacts
         run: |
           mkdir -p output/artifact/debug
-          mkdir -p output/artifact/release
           unzip "output/fas-rs(debug).zip" -d output/artifact/debug
-          unzip "output/fas-rs(release).zip" -d output/artifact/release
       - name: Upload debug version
         uses: actions/upload-artifact@v4
         with:
           name: fas-rs(debug)
           compression-level: 9
           path: output/artifact/debug
-      - name: Upload release version
-        uses: actions/upload-artifact@v4
+  
+  push_to_ci_group:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    name: Push to CI Group
+    needs:
+      - debug-build
+      - release-build
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: fas-rs(release)
-          compression-level: 9
-          path: output/artifact/release
+          path: artifacts
+      - name: Package Artifacts
+        run: |
+          cd "${{ github.workspace }}/artifacts/fas-rs(debug)"
+          zip -9 -rq "../fas-rs(debug)" .
+          cd "${{ github.workspace }}/artifacts/fas-rs(release)"
+          zip -9 -rq "../fas-rs(release)" .
+      - name: Post to Debug Group
+        shell: bash
+        env:
+          GROUP_DEBUG_ID: ${{ secrets.TELEGRAM_TO }}
+          BOT_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          THREAD_ID: ${{ secrets.THREAD_ID }}
+          COMMIT_MESSAGE: |+
+            New push to GitHub
+            ```
+            ${{ github.event.head_commit.message }}
+            ```by `${{ github.event.head_commit.author.name }}`
+            See commit detail [here](${{ github.event.head_commit.url }})
+        run: |
+          ESCAPED=$(python3 -c 'import json,os,urllib.parse; print(urllib.parse.quote(json.dumps(os.environ["COMMIT_MESSAGE"])))')
+          cd ${{ github.workspace }}
+          echo $COMMIT_MESSAGE_FIXED
+          curl -v "https://api.telegram.org/bot${BOT_TOKEN}/sendMediaGroup?chat_id=${GROUP_DEBUG_ID}&message_thread_id=${THREAD_ID}&media=%5B%7B%22type%22:%22document%22,%20%22media%22:%22attach://debug_zip%22,%22parse_mode%22:%22MarkdownV2%22,%22caption%22:\"\"%7D,%7B%22type%22:%22document%22,%20%22media%22:%22attach://release_zip%22,%22parse_mode%22:%22MarkdownV2%22,%22caption%22:${ESCAPED}%7D%5D" -F debug_zip="@artifacts/fas-rs(debug).zip" -F release_zip="@artifacts/fas-rs(release).zip"

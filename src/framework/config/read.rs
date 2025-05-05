@@ -1,18 +1,21 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{fs, path::Path, sync::mpsc::Sender, thread, time::Duration};
+use std::{fs, path::Path, sync::mpsc::Sender, time::Duration};
 
 use inotify::{Inotify, WatchMask};
 use log::{debug, error};
@@ -21,67 +24,57 @@ use super::data::{ConfigData, SceneAppList};
 use crate::framework::error::Result;
 
 const SCENE_PROFILE: &str = "/data/data/com.omarea.vtools/shared_prefs/games.xml";
+const MAX_RETRY_COUNT: u8 = 10;
 
 pub(super) fn wait_and_read(path: &Path, std_path: &Path, sx: &Sender<ConfigData>) -> Result<()> {
-    let mut retry_count = 0;
-
-    let std_config = fs::read_to_string(std_path)?;
-    let std_config: ConfigData = toml::from_str(&std_config)?;
+    let std_config = read_config(std_path)?;
 
     loop {
-        check_counter_final(&mut retry_count, sx, &std_config);
-
-        let ori = match fs::read_to_string(path) {
-            Ok(s) => {
-                retry_count = 0;
-                s
+        match read_config_with_retry(path) {
+            Ok(mut config) => {
+                if config.config.scene_game_list {
+                    if let Err(e) = read_scene_games(&mut config) {
+                        error!("Failed to read scene games: {e}");
+                    }
+                }
+                sx.send(config).unwrap();
             }
             Err(e) => {
-                debug!("Failed to read config {path:?}, reason: {e}");
-                retry_count += 1;
-                thread::sleep(Duration::from_secs(1));
-                continue;
+                error!("Too many retries reading config: {e}");
+                error!("Using standard profile until user config is available.");
+                sx.send(std_config.clone()).unwrap();
             }
-        };
-
-        let mut toml: ConfigData = match toml::from_str(&ori) {
-            Ok(o) => {
-                retry_count = 0;
-                o
-            }
-            Err(e) => {
-                assert!(
-                    retry_count <= 3,
-                    "Failed to parse config {path:?}, reason: {e}, go panic."
-                );
-
-                retry_count += 1;
-                thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-        };
-
-        if toml.config.scene_game_list {
-            let _ = read_scene_games(&mut toml);
         }
-
-        sx.send(toml).unwrap();
 
         wait_until_update(path)?;
     }
 }
 
-fn check_counter_final(retry_count: &mut u8, sx: &Sender<ConfigData>, std_config: &ConfigData) {
-    if *retry_count > 10 {
-        error!("Too many read / parse user config retries");
-        error!("Use std profile instead until we could read and parse user config");
+fn read_config(path: &Path) -> Result<ConfigData> {
+    let content = fs::read_to_string(path)?;
+    let config = toml::from_str(&content)?;
+    Ok(config)
+}
 
-        sx.send(std_config.clone()).unwrap();
-        *retry_count = 0;
+fn read_config_with_retry(path: &Path) -> Result<ConfigData> {
+    let mut retry_count = 0;
+
+    loop {
+        match read_config(path) {
+            Ok(config) => return Ok(config),
+            Err(e) => {
+                debug!("Failed to read config at {}: {e}", path.display());
+                retry_count += 1;
+                if retry_count >= MAX_RETRY_COUNT {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
     }
 }
 
-fn read_scene_games(toml: &mut ConfigData) -> Result<()> {
+fn read_scene_games(config: &mut ConfigData) -> Result<()> {
     if Path::new(SCENE_PROFILE).exists() {
         let scene_apps = fs::read_to_string(SCENE_PROFILE)?;
         let scene_apps: SceneAppList = quick_xml::de::from_str(&scene_apps)?;
@@ -92,29 +85,27 @@ fn read_scene_games(toml: &mut ConfigData) -> Result<()> {
             .map(|game| game.pkg)
             .collect();
 
-        toml.scene_game_list = game_list;
+        config.scene_game_list = game_list;
     }
 
     Ok(())
 }
 
-fn wait_until_update<P: AsRef<Path>>(path: P) -> Result<()> {
-    let path = path.as_ref();
+fn wait_until_update(path: &Path) -> Result<()> {
     let mut inotify = Inotify::init()?;
 
     if Path::new(SCENE_PROFILE).exists() {
-        let _ = inotify
+        inotify
             .watches()
-            .add(SCENE_PROFILE, WatchMask::CLOSE_WRITE | WatchMask::MODIFY);
+            .add(SCENE_PROFILE, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)?;
     }
 
-    if inotify
+    inotify
         .watches()
-        .add(path, WatchMask::CLOSE_WRITE | WatchMask::MODIFY)
-        .is_ok()
-    {
-        let _ = inotify.read_events_blocking(&mut []);
-    }
+        .add(path, WatchMask::MODIFY | WatchMask::CLOSE_WRITE)?;
+
+    let mut buffer = [0; 1024];
+    inotify.read_events_blocking(&mut buffer)?;
 
     Ok(())
 }

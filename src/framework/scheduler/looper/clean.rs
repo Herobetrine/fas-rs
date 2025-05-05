@@ -1,60 +1,76 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, ffi::CString, fs, path::Path, ptr};
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    fs::{self, set_permissions},
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    ptr,
+};
 
-use libc::{mount, umount, umount2, MS_BIND, MS_REC};
+use libc::{MS_BIND, MS_REC, mount, umount, umount2};
 
 use crate::framework::error::Result;
 
-fn lock_value<P: AsRef<Path>, S: AsRef<str>>(p: P, v: S) -> Result<()> {
-    let value = v.as_ref();
-    let path = p.as_ref();
+fn lock_value<P: AsRef<Path>, S: AsRef<str>>(path: P, value: S) {
+    let value = value.as_ref();
+    let path = path.as_ref();
 
-    let path = format!("{}", path.display());
+    let path_str = path.display().to_string();
     let mount_path = format!("/cache/mount_mask_{value}");
 
-    unmount(&path);
-
-    fs::write(&path, value)?;
-    fs::write(&mount_path, value)?;
-
-    mount_bind(&mount_path, &path);
-
-    Ok(())
+    let _ = unmount(&path_str);
+    let _ = set_permissions(path, PermissionsExt::from_mode(0o644));
+    let _ = fs::write(&path_str, value);
+    let _ = set_permissions(path, PermissionsExt::from_mode(0o444));
+    let _ = fs::write(&mount_path, value);
+    let _ = mount_bind(&mount_path, &path_str);
 }
 
-fn mount_bind(src_path: &str, dest_path: &str) {
-    let src_path = CString::new(src_path).unwrap();
-    let dest_path = CString::new(dest_path).unwrap();
+fn mount_bind(src_path: &str, dest_path: &str) -> Result<()> {
+    let src_path = CString::new(src_path)?;
+    let dest_path = CString::new(dest_path)?;
 
     unsafe {
         umount2(dest_path.as_ptr(), libc::MNT_DETACH);
 
-        mount(
+        if mount(
             src_path.as_ptr().cast(),
             dest_path.as_ptr().cast(),
             ptr::null(),
             MS_BIND | MS_REC,
             ptr::null(),
-        );
+        ) != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
     }
+
+    Ok(())
 }
 
-fn unmount(file_system: &str) {
-    let path = CString::new(file_system).unwrap();
-    let _ = unsafe { umount(path.as_ptr()) };
+fn unmount(file_system: &str) -> Result<()> {
+    let path = CString::new(file_system)?;
+    if unsafe { umount(path.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 macro_rules! lock_values {
@@ -64,7 +80,7 @@ macro_rules! lock_values {
                 $map.insert($path, last_value);
             }
 
-            let _ = lock_value($path, $value);
+            lock_value($path, $value);
         )*
     }
 }
@@ -75,9 +91,9 @@ pub struct Cleaner {
 
 impl Cleaner {
     pub fn new() -> Self {
-        let map = HashMap::new();
-
-        Self { map }
+        Self {
+            map: HashMap::new(),
+        }
     }
 
     pub fn cleanup(&mut self) {
@@ -105,7 +121,7 @@ impl Cleaner {
 
     pub fn undo_cleanup(&self) {
         for (path, value) in &self.map {
-            unmount(path);
+            let _ = unmount(path);
             let _ = fs::write(path, value);
         }
     }

@@ -1,17 +1,20 @@
 #!/system/bin/sh
-# Copyright 2023 shadow3aaa@gitbub.com
+# Copyright 2023-2025, shadow3, shadow3aaa
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# This file is part of fas-rs.
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
+# fas-rs is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version.
 #
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along
+# with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
 DIR=/sdcard/Android/fas-rs
 CONF=$DIR/games.toml
@@ -40,8 +43,8 @@ if [ $ARCH != arm64 ]; then
 elif [ $API -le 30 ]; then
 	local_print "系统版本过低, 需要安卓12及以上的系统版本版本" "Required A12+ !"
 	abort
-elif uname -r | awk -F. '{if ($1 < 5 || ($1 == 5 && $2 < 10)) exit 0; else exit 1}'; then
-	local_print "内核版本过低，需要5.10或以上 !" "The kernel version is too low. Requires 5.10+ !"
+elif uname -r | awk -F. '{if ($1 < 5 || ($1 == 5 && $2 < 8)) exit 0; else exit 1}'; then
+	local_print "内核版本过低，需要5.8或以上 !" "The kernel version is too low. Requires 5.8+ !"
 	abort
 fi
 
@@ -52,7 +55,7 @@ else
 	cp $MODPATH/games.toml $CONF
 fi
 
-cp -f $MODPATH/README.md $DIR/doc_cn.md
+cp -f $MODPATH/README_CN.md $DIR/doc_cn.md
 cp -f $MODPATH/README_EN.md $DIR/doc_en.md
 
 sh $MODPATH/vtools/init_vtools.sh $(realpath $MODPATH/module.prop)

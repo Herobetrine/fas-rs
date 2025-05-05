@@ -1,16 +1,19 @@
-// Copyright 2023 shadow3aaa@gitbub.com
+// Copyright 2024-2025, shadow3aaa
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
+// This file is part of fas-rs.
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+// fas-rs is free software: you can redistribute it and/or modify it under
+// the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// fas-rs is distributed in the hope that it will be useful, but WITHOUT ANY
+// WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+// FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+// details.
+//
+// You should have received a copy of the GNU General Public License along
+// with fas-rs. If not, see <https://www.gnu.org/licenses/>.
 
 use std::{collections::HashMap, fs, path::PathBuf, sync::mpsc::Receiver, time::Duration};
 
@@ -19,8 +22,8 @@ use log::{debug, error, info};
 use mlua::Lua;
 
 use super::{
-    api::{self, Api},
     EXTENSIONS_PATH,
+    api::{Api, helper_funs},
 };
 use crate::framework::error::Result;
 
@@ -89,17 +92,54 @@ fn load_extensions() -> Result<ExtensionMap> {
         )?;
 
         // Add in api v1
+        // Removed in v4.2.0(apiv4)
         lua.globals().set(
             "set_policy_freq_offset",
-            lua.create_function(|_, (policy, offset): (i32, isize)| {
-                api::set_policy_freq_offset(policy, offset)?;
+            lua.create_function(|_, (policy, offset)| {
+                helper_funs::set_policy_freq_offset(policy, offset);
+                Ok(())
+            })?,
+        )?;
+
+        // Add in api v3
+        lua.globals().set(
+            "set_ignore_policy",
+            lua.create_function(|_, (policy, val)| {
+                helper_funs::set_ignore_policy(policy, val);
+                Ok(())
+            })?,
+        )?;
+
+        // Add in api v4
+        lua.globals().set(
+            "set_extra_policy_abs",
+            lua.create_function(|_, (policy, min, max)| {
+                helper_funs::set_extra_policy_abs(policy, min, max);
+                Ok(())
+            })?,
+        )?;
+
+        // Add in api v4
+        lua.globals().set(
+            "set_extra_policy_rel",
+            lua.create_function(|_, (policy, target_policy, min, max)| {
+                helper_funs::set_extra_policy_rel(policy, target_policy, min, max);
+                Ok(())
+            })?,
+        )?;
+
+        // Add in api v4
+        lua.globals().set(
+            "remove_extra_policy",
+            lua.create_function(|_, policy| {
+                helper_funs::remove_extra_policy(policy);
                 Ok(())
             })?,
         )?;
 
         match lua.load(&file).exec() {
             Ok(()) => {
-                info!("Extension loaded successfully: {path:?}");
+                info!("Extension loaded successfully: {}", path.display());
                 map.insert(path, lua);
             }
             Err(e) => {

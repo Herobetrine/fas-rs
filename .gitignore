@@ -9,3 +9,9 @@
 
 # idea
 /.idea
+
+# Darwin
+/.DS_Store
+
+# pnpm
+.pnpm*
